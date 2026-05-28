@@ -45,6 +45,60 @@ app.get('/sessions', (req, res) => {
   res.json(getAllSessions());
 });
 
+// WhatsApp webhook verification
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+// WhatsApp incoming messages
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200);
+
+  const msg = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  if (!msg || msg.type !== 'text') return;
+
+  const from = msg.from;
+  const text = msg.text.body;
+
+  const { buildMessages } = require('./services/prompt');
+  const { getSession, addMessage } = require('./services/memoryService');
+  const { callAI } = require('./services/aiService');
+
+  const session = getSession(from);
+  addMessage(from, 'user', text);
+  const messages = buildMessages(session, null);
+
+  let reply;
+  try {
+    reply = await callAI(messages);
+  } catch (e) {
+    console.error('AI error:', e.message);
+    return;
+  }
+
+  addMessage(from, 'assistant', reply);
+
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: from,
+      text: { body: reply },
+    }),
+  });
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
